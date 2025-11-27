@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: stealth-geo-tracker
+    env: php
+    plan: free
+    buildCommand: "./deploy.sh"
+    startCommand: "php -S 0.0.0.0:$PORT index.php"
+    envVars:
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        value: your_secure_password_here
+      - key: SITE_BASE_URL
+        value: https://your-app.onrender.com
