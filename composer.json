@@ -1,0 +1,15 @@
+{
+    "name": "stealth-geo-tracker",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "ext-pdo": "*",
+        "ext-pdo_sqlite": "*"
+    },
+    "scripts": {
+        "post-install-cmd": [
+            "chmod 755 deploy.sh",
+            "./deploy.sh"
+        ]
+    }
+}
