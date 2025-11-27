@@ -1,28 +1,34 @@
-import os
+#!/usr/bin/env python3
+"""
+Advay Universe Telegram Bot
+A feature-rich Telegram bot with AI, entertainment, utilities, and more!
+"""
+
 import logging
-import json
-import random
+import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import Dict, List, Optional
+import random
+import json
+import urllib.parse
+
 import requests
-from telegram import (
-    Update, 
-    InlineKeyboardButton, 
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    BotCommand
-)
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, KeyboardButton
 from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    MessageHandler, 
-    filters, 
-    ContextTypes,
+    Application,
+    CommandHandler,
+    MessageHandler,
     CallbackQueryHandler,
-    ConversationHandler
+    ConversationHandler,
+    ContextTypes,
+    filters,
 )
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatAction
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -31,1127 +37,1117 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Environment variables
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
-
-# Store user data and group data
-user_sessions = {}
-group_settings = {}
-
 # Conversation states
-PROMPT_IMAGE, PROMPT_TEXT, WEATHER_LOCATION, BROADCAST_MESSAGE, URL_SHORTEN, BOOK_SEARCH, REMINDER_SET, CURRENCY_CONVERT, QR_GENERATE = range(9)
+WAITING_FOR_PROMPT, WAITING_FOR_LOCATION, WAITING_FOR_CURRENCY, WAITING_FOR_QR = range(4)
 
 class AdvayUniverseBot:
-    def __init__(self):
-        self.application = None
+    """Main bot class with all features"""
+    
+    def __init__(self, token: str, admin_id: str):
+        self.token = token
+        self.admin_id = int(admin_id) if admin_id else None
         
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # In-memory storage
+        self.users: Dict[int, dict] = {}
+        self.user_activity: Dict[int, int] = {}
+        self.group_settings: Dict[int, dict] = {}
+        self.bot_stats = {
+            'total_commands': 0,
+            'start_time': datetime.now(),
+            'features_used': {}
+        }
+    
+    def get_main_keyboard(self) -> ReplyKeyboardMarkup:
+        """Create main menu keyboard"""
+        keyboard = [
+            [KeyboardButton("🤖 AI Features"), KeyboardButton("🎉 Entertainment")],
+            [KeyboardButton("💰 Utilities"), KeyboardButton("📊 Crypto & Finance")],
+            [KeyboardButton("🌐 Group Tools"), KeyboardButton("⚙️ Admin Panel")],
+            [KeyboardButton("ℹ️ Help")]
+        ]
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    def get_ai_keyboard(self) -> InlineKeyboardMarkup:
+        """AI features menu"""
+        keyboard = [
+            [InlineKeyboardButton("🎨 Generate Image", callback_data="ai_image")],
+            [InlineKeyboardButton("💬 AI Chat", callback_data="ai_chat")],
+            [InlineKeyboardButton("✍️ Story Generator", callback_data="ai_story")],
+            [InlineKeyboardButton("🎭 Creative Writing", callback_data="ai_creative")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_entertainment_keyboard(self) -> InlineKeyboardMarkup:
+        """Entertainment features menu"""
+        keyboard = [
+            [InlineKeyboardButton("😂 Random Meme", callback_data="ent_meme")],
+            [InlineKeyboardButton("🎭 Random Joke", callback_data="ent_joke")],
+            [InlineKeyboardButton("💭 Inspirational Quote", callback_data="ent_quote")],
+            [InlineKeyboardButton("🐕 Random Dog", callback_data="ent_dog")],
+            [InlineKeyboardButton("🐱 Random Cat", callback_data="ent_cat")],
+            [InlineKeyboardButton("🍕 Random Recipe", callback_data="ent_recipe")],
+            [InlineKeyboardButton("🎲 Random Activity", callback_data="ent_activity")],
+            [InlineKeyboardButton("🤓 Random Fact", callback_data="ent_fact")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_utilities_keyboard(self) -> InlineKeyboardMarkup:
+        """Utilities features menu"""
+        keyboard = [
+            [InlineKeyboardButton("🌤️ Weather", callback_data="util_weather")],
+            [InlineKeyboardButton("💱 Currency Converter", callback_data="util_currency")],
+            [InlineKeyboardButton("📱 QR Code Generator", callback_data="util_qr")],
+            [InlineKeyboardButton("📚 Book Search", callback_data="util_book")],
+            [InlineKeyboardButton("🌍 Country Info", callback_data="util_country")],
+            [InlineKeyboardButton("🕐 World Time", callback_data="util_time")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_crypto_keyboard(self) -> InlineKeyboardMarkup:
+        """Crypto & Finance menu"""
+        keyboard = [
+            [InlineKeyboardButton("₿ Bitcoin Price", callback_data="crypto_btc")],
+            [InlineKeyboardButton("Ξ Ethereum Price", callback_data="crypto_eth")],
+            [InlineKeyboardButton("Ð Dogecoin Price", callback_data="crypto_doge")],
+            [InlineKeyboardButton("📊 Top 10 Cryptos", callback_data="crypto_top10")],
+            [InlineKeyboardButton("💹 Market Overview", callback_data="crypto_market")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command"""
         user = update.effective_user
-        chat_type = update.effective_chat.type
+        chat = update.effective_chat
         
-        if chat_type == "private":
-            welcome_text = f"""
-🌟 *Welcome to Advay Universe, {user.first_name}!* 🌟
-
-I'm your all-in-one AI assistant with amazing features:
-
-🤖 *AI Features*
-• Generate AI images from text
-• AI text generation and completion
-• Smart conversations
-
-🎉 *Entertainment*
-• Memes from various subreddits
-• Random jokes & quotes
-• Animal images & facts
-• Comics & fun content
-
-💰 *Utilities*
-• Currency conversion
-• Weather forecasts
-• URL shortener
-• QR code generator
-• Book searches
-• Crypto prices
-
-🌐 *Group Features*
-• Welcome messages
-• Auto-responses
-• Group management tools
-
-Use the menu below or type /help for more info!
-            """
-            
-            keyboard = [
-                [KeyboardButton("🤖 AI Features"), KeyboardButton("🎉 Entertainment")],
-                [KeyboardButton("💰 Utilities"), KeyboardButton("📊 Crypto & Finance")],
-                [KeyboardButton("🌐 Group Tools"), KeyboardButton("⚙️ Admin Panel")],
-                [KeyboardButton("ℹ️ Help")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            await update.message.reply_text(
-                welcome_text,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.MARKDOWN
+        # Track user
+        if user.id not in self.users:
+            self.users[user.id] = {
+                'username': user.username,
+                'first_seen': datetime.now(),
+                'last_active': datetime.now()
+            }
+        
+        self.user_activity[user.id] = self.user_activity.get(user.id, 0) + 1
+        
+        # Group welcome
+        if chat.type in ['group', 'supergroup']:
+            welcome_msg = (
+                f"👋 Hello everyone! I'm *Advay Universe Bot*\n\n"
+                f"I can help with:\n"
+                f"🤖 AI Image & Text Generation\n"
+                f"🎉 Entertainment (Memes, Jokes, etc.)\n"
+                f"💰 Utilities (Weather, Currency, etc.)\n"
+                f"📊 Crypto Prices & Market Data\n\n"
+                f"Use /help to see all commands!"
             )
-            
-            # Track user
-            if user.id not in user_sessions:
-                user_sessions[user.id] = {
-                    'first_seen': datetime.now(),
-                    'usage_count': 0,
-                    'preferences': {},
-                    'last_active': datetime.now()
-                }
-        else:
-            await update.message.reply_text(
-                "🤖 Advay Universe is here! I'm ready to assist in this group. "
-                "Type /help to see what I can do!",
-                parse_mode=ParseMode.MARKDOWN
-            )
-
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        help_text = """
-📚 *Advay Universe Bot Help*
-
-*Basic Commands:*
-/start - Start the bot
-/help - Show this help message
-/menu - Show main menu
-
-*AI Features:*
-/ai_image - Generate AI image from text
-/ai_text - Generate AI text completion
-
-*Entertainment:*
-/meme - Get random memes
-/joke - Get random jokes
-/quote - Get inspirational quotes
-/cat - Random cat images
-/dog - Random dog images
-/comic - Random xkcd comic
-
-*Utilities:*
-/weather - Get weather information
-/currency - Currency converter
-/shorten - Shorten URLs
-/qr - Generate QR codes
-/book - Search for books
-/crypto - Crypto prices
-
-*Group Features:*
-Automatically welcomes new members
-Use /help in groups for group-specific commands
-
-*Admin Commands:*
-/broadcast - Broadcast message to all users
-/stats - Bot usage statistics
-
-Use buttons or commands to interact with me! 🚀
-        """
-        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
-
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user_message = update.message.text
-        user_id = update.effective_user.id
-        
-        # Track usage
-        if user_id in user_sessions:
-            user_sessions[user_id]['usage_count'] += 1
-            user_sessions[user_id]['last_active'] = datetime.now()
-        
-        if user_message == "🤖 AI Features":
-            await self.show_ai_features(update, context)
-        elif user_message == "🎉 Entertainment":
-            await self.show_entertainment(update, context)
-        elif user_message == "💰 Utilities":
-            await self.show_utilities(update, context)
-        elif user_message == "📊 Crypto & Finance":
-            await self.show_crypto_finance(update, context)
-        elif user_message == "🌐 Group Tools":
-            await self.show_group_tools(update, context)
-        elif user_message == "⚙️ Admin Panel":
-            await self.show_admin_panel(update, context)
-        elif user_message == "ℹ️ Help":
-            await self.help_command(update, context)
-        else:
-            # AI response for general messages
-            response = await self.generate_ai_response(user_message)
-            await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
-
-    async def show_ai_features(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        keyboard = [
-            [
-                InlineKeyboardButton("🖼️ Generate Image", callback_data="ai_image"),
-                InlineKeyboardButton("📝 AI Text", callback_data="ai_text")
-            ],
-            [
-                InlineKeyboardButton("🎨 Creative Ideas", callback_data="creative_ideas"),
-                InlineKeyboardButton("📚 Story Writer", callback_data="story_writer")
-            ],
-            [InlineKeyboardButton("🔙 Back to Main", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "🤖 *AI Features Menu*\n\nChoose an AI feature to use:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    async def show_entertainment(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        keyboard = [
-            [
-                InlineKeyboardButton("😂 Memes", callback_data="get_meme"),
-                InlineKeyboardButton("😄 Jokes", callback_data="get_joke")
-            ],
-            [
-                InlineKeyboardButton("💬 Quotes", callback_data="get_quote"),
-                InlineKeyboardButton("🐱 Animals", callback_data="get_animal")
-            ],
-            [
-                InlineKeyboardButton("📚 Comics", callback_data="get_comic"),
-                InlineKeyboardButton("🎮 Activities", callback_data="get_activity")
-            ],
-            [
-                InlineKeyboardButton("🍕 Random Food", callback_data="random_food"),
-                InlineKeyboardButton("🎲 Random Fact", callback_data="random_fact")
-            ],
-            [InlineKeyboardButton("🔙 Back to Main", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "🎉 *Entertainment Menu*\n\nChoose entertainment option:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    async def show_utilities(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        keyboard = [
-            [
-                InlineKeyboardButton("🌤️ Weather", callback_data="get_weather"),
-                InlineKeyboardButton("💰 Currency", callback_data="currency_convert")
-            ],
-            [
-                InlineKeyboardButton("🔗 URL Shortener", callback_data="shorten_url"),
-                InlineKeyboardButton("📱 QR Code", callback_data="generate_qr")
-            ],
-            [
-                InlineKeyboardButton("📚 Book Search", callback_data="search_book"),
-                InlineKeyboardButton("🌍 Country Info", callback_data="country_info")
-            ],
-            [
-                InlineKeyboardButton("📰 News", callback_data="get_news"),
-                InlineKeyboardButton("🕐 Time Info", callback_data="time_info")
-            ],
-            [InlineKeyboardButton("🔙 Back to Main", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "💰 *Utilities Menu*\n\nChoose a utility:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    async def show_crypto_finance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        keyboard = [
-            [
-                InlineKeyboardButton("₿ Crypto Prices", callback_data="crypto_prices"),
-                InlineKeyboardButton("💹 Bitcoin", callback_data="bitcoin_price")
-            ],
-            [
-                InlineKeyboardButton("🪙 Ethereum", callback_data="ethereum_price"),
-                InlineKeyboardButton("🐕 Dogecoin", callback_data="dogecoin_price")
-            ],
-            [
-                InlineKeyboardButton("💰 Forex Rates", callback_data="forex_rates"),
-                InlineKeyboardButton("📈 Stock Info", callback_data="stock_info")
-            ],
-            [InlineKeyboardButton("🔙 Back to Main", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "📊 *Crypto & Finance*\n\nGet real-time crypto and financial data:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    async def show_group_tools(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        keyboard = [
-            [
-                InlineKeyboardButton("👋 Welcome Setup", callback_data="setup_welcome"),
-                InlineKeyboardButton("📊 Group Stats", callback_data="group_stats")
-            ],
-            [
-                InlineKeyboardButton("📝 Rules", callback_data="group_rules"),
-                InlineKeyboardButton("🎯 Auto-Reply", callback_data="auto_reply")
-            ],
-            [InlineKeyboardButton("🔙 Back to Main", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "🌐 *Group Tools*\n\nConfigure group features:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    async def show_admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Access denied. Admin only.")
+            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
             return
-            
-        total_users = len(user_sessions)
-        active_today = sum(1 for user_data in user_sessions.values() 
-                          if (datetime.now() - user_data['last_active']).days < 1)
         
-        keyboard = [
-            [
-                InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
-                InlineKeyboardButton("📊 Statistics", callback_data="admin_stats")
-            ],
-            [
-                InlineKeyboardButton("📤 Export Data", callback_data="admin_export"),
-                InlineKeyboardButton("🔄 System Info", callback_data="system_info")
-            ],
-            [InlineKeyboardButton("🔙 Back to Main", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # Private chat welcome
+        welcome_msg = (
+            f"🌟 *Welcome to Advay Universe, {user.first_name}!* 🌟\n\n"
+            f"I'm your all-in-one bot with amazing features:\n\n"
+            f"🤖 *AI Features* - Generate images, chat with AI\n"
+            f"🎉 *Entertainment* - Memes, jokes, quotes, animals\n"
+            f"💰 *Utilities* - Weather, currency, QR codes\n"
+            f"📊 *Crypto* - Real-time cryptocurrency prices\n"
+            f"🌐 *Group Tools* - Auto-welcome, management\n\n"
+            f"👇 *Choose from the menu below or use /help*"
+        )
         
         await update.message.reply_text(
-            f"⚙️ *Admin Panel*\n\n👥 Total Users: {total_users}\n🟢 Active Today: {active_today}\n\nAdmin tools:",
-            reply_markup=reply_markup,
+            welcome_msg,
+            reply_markup=self.get_main_keyboard(),
             parse_mode=ParseMode.MARKDOWN
         )
-
-    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command"""
+        help_text = (
+            "📖 *Advay Universe Bot - Help Guide*\n\n"
+            "*🤖 AI Commands:*\n"
+            "/imagine <prompt> - Generate AI image\n"
+            "/ask <question> - Ask AI anything\n"
+            "/story <topic> - Generate a story\n\n"
+            "*🎉 Entertainment Commands:*\n"
+            "/meme - Random meme\n"
+            "/joke - Random joke\n"
+            "/quote - Inspirational quote\n"
+            "/dog - Random dog image\n"
+            "/cat - Random cat image\n"
+            "/recipe - Random recipe\n"
+            "/activity - Suggest an activity\n\n"
+            "*💰 Utility Commands:*\n"
+            "/weather <city> - Get weather\n"
+            "/convert <amount> <from> <to> - Currency\n"
+            "/qr <text> - Generate QR code\n"
+            "/book <title> - Search books\n"
+            "/country <name> - Country info\n\n"
+            "*📊 Crypto Commands:*\n"
+            "/btc - Bitcoin price\n"
+            "/eth - Ethereum price\n"
+            "/doge - Dogecoin price\n"
+            "/crypto <symbol> - Any crypto price\n\n"
+            "*⚙️ Admin Commands:*\n"
+            "/broadcast <message> - Send to all users\n"
+            "/stats - Bot statistics\n\n"
+            "💡 *Tip: Use the menu buttons for easy navigation!*"
+        )
+        
+        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    
+    async def handle_menu_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle main menu button presses"""
+        text = update.message.text
+        
+        if text == "🤖 AI Features":
+            await update.message.reply_text(
+                "🤖 *AI Features*\n\nChoose an AI feature below:",
+                reply_markup=self.get_ai_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        elif text == "🎉 Entertainment":
+            await update.message.reply_text(
+                "🎉 *Entertainment Hub*\n\nPick your entertainment:",
+                reply_markup=self.get_entertainment_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        elif text == "💰 Utilities":
+            await update.message.reply_text(
+                "💰 *Utilities*\n\nSelect a utility tool:",
+                reply_markup=self.get_utilities_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        elif text == "📊 Crypto & Finance":
+            await update.message.reply_text(
+                "📊 *Crypto & Finance*\n\nCheck cryptocurrency prices:",
+                reply_markup=self.get_crypto_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        elif text == "🌐 Group Tools":
+            group_text = (
+                "🌐 *Group Tools*\n\n"
+                "Add me to your group for:\n"
+                "• Auto-welcome new members\n"
+                "• Group statistics\n"
+                "• Fun group interactions\n\n"
+                "Just add me and I'll work automatically!"
+            )
+            await update.message.reply_text(group_text, parse_mode=ParseMode.MARKDOWN)
+        
+        elif text == "⚙️ Admin Panel":
+            if update.effective_user.id == self.admin_id:
+                admin_text = (
+                    "⚙️ *Admin Panel*\n\n"
+                    "Available commands:\n"
+                    "/broadcast <message> - Send to all users\n"
+                    "/stats - View bot statistics\n"
+                    "/users - List all users\n"
+                    "/export - Export user data"
+                )
+                await update.message.reply_text(admin_text, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text("❌ Admin access required!")
+        
+        elif text == "ℹ️ Help":
+            await self.help_command(update, context)
+    
+    async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline button callbacks"""
         query = update.callback_query
         await query.answer()
         
         data = query.data
+        self.bot_stats['total_commands'] += 1
+        self.bot_stats['features_used'][data] = self.bot_stats['features_used'].get(data, 0) + 1
         
-        if data == "main_menu":
-            await query.edit_message_text("Returning to main menu...")
-            await self.start(update, context)
-            return
-            
-        elif data == "ai_image":
+        # AI Features
+        if data == "ai_image":
             await query.edit_message_text(
-                "🖼️ *AI Image Generation*\n\nSend me a description of the image you want to generate:",
+                "🎨 *AI Image Generator*\n\n"
+                "Send me a description and I'll create an image!\n\n"
+                "Example: _A futuristic city at sunset_",
                 parse_mode=ParseMode.MARKDOWN
             )
-            return PROMPT_IMAGE
-            
-        elif data == "ai_text":
+            return WAITING_FOR_PROMPT
+        
+        elif data == "ai_chat":
             await query.edit_message_text(
-                "📝 *AI Text Generation*\n\nSend me a prompt for text generation:",
+                "💬 *AI Chat*\n\n"
+                "Ask me anything! I'll use AI to respond.\n\n"
+                "Example: _Explain quantum computing_",
                 parse_mode=ParseMode.MARKDOWN
             )
-            return PROMPT_TEXT
-            
-        elif data == "get_meme":
-            await query.edit_message_text("🔄 Getting a fresh meme...")
-            meme = await self.get_random_meme()
-            await query.edit_message_text(meme, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "get_joke":
-            await query.edit_message_text("🔄 Fetching a joke...")
-            joke = await self.get_random_joke()
-            await query.edit_message_text(joke, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "get_quote":
-            await query.edit_message_text("🔄 Getting an inspirational quote...")
-            quote = await self.get_random_quote()
-            await query.edit_message_text(quote, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "get_animal":
-            await query.edit_message_text("🔄 Finding a cute animal...")
-            animal = await self.get_random_animal()
-            await query.edit_message_text(animal, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "get_weather":
+            return WAITING_FOR_PROMPT
+        
+        elif data == "ai_story":
             await query.edit_message_text(
-                "🌤️ *Weather Information*\n\nSend me a city name:",
+                "✍️ *Story Generator*\n\n"
+                "Give me a topic and I'll write a story!\n\n"
+                "Example: _A robot learning to love_",
                 parse_mode=ParseMode.MARKDOWN
             )
-            return WEATHER_LOCATION
-            
-        elif data == "currency_convert":
+            return WAITING_FOR_PROMPT
+        
+        elif data == "ai_creative":
             await query.edit_message_text(
-                "💰 *Currency Converter*\n\nSend amount and currencies (e.g., 100 USD to KES):",
+                "🎭 *Creative Writing*\n\n"
+                "Tell me what to write about!\n\n"
+                "Example: _A poem about the ocean_",
                 parse_mode=ParseMode.MARKDOWN
             )
-            return CURRENCY_CONVERT
-            
-        elif data == "generate_qr":
+            return WAITING_FOR_PROMPT
+        
+        # Entertainment
+        elif data == "ent_meme":
+            await self.send_meme(query)
+        
+        elif data == "ent_joke":
+            await self.send_joke(query)
+        
+        elif data == "ent_quote":
+            await self.send_quote(query)
+        
+        elif data == "ent_dog":
+            await self.send_dog(query)
+        
+        elif data == "ent_cat":
+            await self.send_cat(query)
+        
+        elif data == "ent_recipe":
+            await self.send_recipe(query)
+        
+        elif data == "ent_activity":
+            await self.send_activity(query)
+        
+        elif data == "ent_fact":
+            await self.send_fact(query)
+        
+        # Crypto
+        elif data.startswith("crypto_"):
+            await self.handle_crypto(query, data)
+        
+        # Utilities
+        elif data == "util_weather":
             await query.edit_message_text(
-                "📱 *QR Code Generator*\n\nSend text or URL to convert to QR code:",
+                "🌤️ *Weather Information*\n\n"
+                "Send me a city name!\n\n"
+                "Example: _London_",
                 parse_mode=ParseMode.MARKDOWN
             )
-            return QR_GENERATE
-            
-        elif data == "crypto_prices":
-            await query.edit_message_text("🔄 Fetching crypto prices...")
-            prices = await self.get_crypto_prices()
-            await query.edit_message_text(prices, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "bitcoin_price":
-            price = await self.get_specific_crypto("bitcoin")
-            await query.edit_message_text(price, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "ethereum_price":
-            price = await self.get_specific_crypto("ethereum")
-            await query.edit_message_text(price, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "dogecoin_price":
-            price = await self.get_specific_crypto("dogecoin")
-            await query.edit_message_text(price, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "random_food":
-            food = await self.get_random_food()
-            await query.edit_message_text(food, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "random_fact":
-            fact = await self.get_random_fact()
-            await query.edit_message_text(fact, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "get_comic":
-            comic = await self.get_random_comic()
-            await query.edit_message_text(comic, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "get_activity":
-            activity = await self.get_random_activity()
-            await query.edit_message_text(activity, parse_mode=ParseMode.MARKDOWN)
-            
-        elif data == "country_info":
+            return WAITING_FOR_LOCATION
+        
+        elif data == "util_currency":
             await query.edit_message_text(
-                "🌍 *Country Information*\n\nSend me a country name:",
+                "💱 *Currency Converter*\n\n"
+                "Format: amount from to\n\n"
+                "Example: _100 USD EUR_",
                 parse_mode=ParseMode.MARKDOWN
             )
-            # This would be implemented similarly to other features
-            
-        elif data == "admin_broadcast":
-            user_id = query.from_user.id
-            if user_id != ADMIN_ID:
-                await query.edit_message_text("❌ Admin only feature")
+            return WAITING_FOR_CURRENCY
+        
+        elif data == "util_qr":
+            await query.edit_message_text(
+                "📱 *QR Code Generator*\n\n"
+                "Send me text or URL to convert!\n\n"
+                "Example: _https://telegram.org_",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return WAITING_FOR_QR
+        
+        elif data == "util_book":
+            await query.edit_message_text(
+                "📚 *Book Search*\n\n"
+                "Send me a book title!\n\n"
+                "Example: _1984_",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        elif data == "util_country":
+            await query.edit_message_text(
+                "🌍 *Country Information*\n\n"
+                "Send me a country name!\n\n"
+                "Example: _Japan_",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        elif data == "main_menu":
+            await query.message.reply_text(
+                "🏠 *Main Menu*\n\nChoose a category:",
+                reply_markup=self.get_main_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+    
+    async def send_meme(self, query):
+        """Fetch and send a random meme"""
+        await query.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+        
+        try:
+            # Try meme-api.com first
+            response = requests.get("https://meme-api.com/gimme", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                await query.message.reply_photo(
+                    photo=data['url'],
+                    caption=f"😂 *{data['title']}*\n\n👍 {data.get('ups', 0)} upvotes\nr/{data.get('subreddit', 'memes')}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
                 return
-            await query.edit_message_text(
-                "📢 *Admin Broadcast*\n\nSend the message you want to broadcast to all users:",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return BROADCAST_MESSAGE
-
-    # AI Image Generation
-    async def generate_ai_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        prompt = update.message.text
-        
-        try:
-            await update.message.reply_text("🎨 Generating your image... This may take a moment.")
-            
-            # Use pollinations.ai for image generation
-            url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(prompt)}"
-            
-            # Send the image
-            await update.message.reply_photo(
-                photo=url,
-                caption=f"🖼️ *AI Generated Image*\n\nPrompt: {prompt}\n\nGenerated via Pollinations.ai",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
         except Exception as e:
-            await update.message.reply_text(f"❌ Error generating image: {str(e)}")
+            logger.error(f"Meme API error: {e}")
         
-        return ConversationHandler.END
-
-    # AI Text Generation
-    async def generate_ai_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        prompt = update.message.text
-        
+        await query.message.reply_text("😅 Couldn't fetch a meme right now. Try again!")
+    
+    async def send_joke(self, query):
+        """Fetch and send a random joke"""
         try:
-            await update.message.reply_text("🤖 Generating text response...")
-            
-            # Use pollinations.ai for text generation
-            url = f"https://pollinations.ai/api/text?prompt={requests.utils.quote(prompt)}"
-            response = requests.get(url, timeout=30)
+            # Try icanhazdadjoke.com
+            headers = {'Accept': 'application/json'}
+            response = requests.get("https://icanhazdadjoke.com/", headers=headers, timeout=10)
             
             if response.status_code == 200:
-                text_response = response.text[:4000]  # Telegram message limit
-                await update.message.reply_text(
-                    f"📝 *AI Response*\n\n{text_response}\n\n---\n_Powered by Pollinations.ai_",
+                joke = response.json()['joke']
+                await query.message.reply_text(f"🎭 *Dad Joke*\n\n{joke}", parse_mode=ParseMode.MARKDOWN)
+                return
+        except Exception as e:
+            logger.error(f"Joke API error: {e}")
+        
+        # Fallback jokes
+        fallback_jokes = [
+            "Why don't scientists trust atoms? Because they make up everything!",
+            "Why did the scarecrow win an award? He was outstanding in his field!",
+            "What do you call a bear with no teeth? A gummy bear!",
+        ]
+        await query.message.reply_text(f"🎭 *Joke*\n\n{random.choice(fallback_jokes)}", parse_mode=ParseMode.MARKDOWN)
+    
+    async def send_quote(self, query):
+        """Fetch and send an inspirational quote"""
+        try:
+            response = requests.get("https://api.quotable.io/random", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                quote_text = f"💭 *Quote of the Moment*\n\n_{data['content']}_\n\n— *{data['author']}*"
+                await query.message.reply_text(quote_text, parse_mode=ParseMode.MARKDOWN)
+                return
+        except Exception as e:
+            logger.error(f"Quote API error: {e}")
+        
+        await query.message.reply_text("💭 Couldn't fetch a quote right now. Try again!")
+    
+    async def send_dog(self, query):
+        """Send random dog image"""
+        await query.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+        
+        try:
+            response = requests.get("https://dog.ceo/api/breeds/image/random", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                await query.message.reply_photo(
+                    photo=data['message'],
+                    caption="🐕 Here's a random good boy/girl!"
+                )
+                return
+        except Exception as e:
+            logger.error(f"Dog API error: {e}")
+        
+        await query.message.reply_text("🐕 Couldn't fetch a dog image. Try again!")
+    
+    async def send_cat(self, query):
+        """Send random cat image"""
+        await query.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+        
+        try:
+            response = requests.get("https://api.thecatapi.com/v1/images/search", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                await query.message.reply_photo(
+                    photo=data[0]['url'],
+                    caption="🐱 Here's a random feline friend!"
+                )
+                return
+        except Exception as e:
+            logger.error(f"Cat API error: {e}")
+        
+        await query.message.reply_text("🐱 Couldn't fetch a cat image. Try again!")
+    
+    async def send_recipe(self, query):
+        """Send random recipe"""
+        try:
+            response = requests.get("https://www.themealdb.com/api/json/v1/1/random.php", timeout=10)
+            if response.status_code == 200:
+                meal = response.json()['meals'][0]
+                
+                # Build ingredients list
+                ingredients = []
+                for i in range(1, 21):
+                    ingredient = meal.get(f'strIngredient{i}')
+                    measure = meal.get(f'strMeasure{i}')
+                    if ingredient and ingredient.strip():
+                        ingredients.append(f"• {measure} {ingredient}".strip())
+                
+                recipe_text = (
+                    f"🍕 *{meal['strMeal']}*\n\n"
+                    f"📍 Category: {meal['strCategory']}\n"
+                    f"🌍 Cuisine: {meal['strArea']}\n\n"
+                    f"*Ingredients:*\n" + "\n".join(ingredients[:10]) + "\n\n"
+                    f"🔗 [Full Recipe]({meal['strSource'] or meal['strYoutube']})"
+                )
+                
+                await query.message.reply_photo(
+                    photo=meal['strMealThumb'],
+                    caption=recipe_text,
                     parse_mode=ParseMode.MARKDOWN
                 )
-            else:
-                # Fallback response
-                fallback_responses = [
-                    f"I understand you're asking about: {prompt}. That's an interesting topic!",
-                    f"Regarding '{prompt}', I think this is worth exploring further.",
-                    f"Your query about '{prompt}' is quite intriguing. Let me think about that...",
-                    f"I've received your message about {prompt}. This seems important!"
-                ]
-                await update.message.reply_text(
-                    f"🤖 {random.choice(fallback_responses)}\n\n_(Note: AI service temporarily unavailable)_",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                
+                return
         except Exception as e:
-            await update.message.reply_text(f"❌ Error generating text: {str(e)}")
+            logger.error(f"Recipe API error: {e}")
         
-        return ConversationHandler.END
-
-    # QR Code Generator
-    async def generate_qr_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        text = update.message.text
-        
-        try:
-            # Generate QR code
-            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={requests.utils.quote(text)}"
-            
-            await update.message.reply_photo(
-                photo=qr_url,
-                caption=f"📱 *QR Code Generated*\n\nContent: {text}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error generating QR code: {str(e)}")
-        
-        return ConversationHandler.END
-
-    # Entertainment Features
-    async def get_random_meme(self) -> str:
-        try:
-            subreddits = ['memes', 'dankmemes', 'wholesomememes', 'me_irl']
-            subreddit = random.choice(subreddits)
-            
-            url = f"https://meme-api.com/gimme/{subreddit}"
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return f"😂 *Meme from r/{data['subreddit']}*\n\n*{data['title']}*\n\n[View Image]({data['url']})"
-            else:
-                return "❌ Could not fetch meme. Try again later!"
-                
-        except Exception as e:
-            logger.error(f"Meme error: {e}")
-            return "❌ Error fetching meme. Please try again!"
-
-    async def get_random_joke(self) -> str:
-        try:
-            apis = [
-                "https://icanhazdadjoke.com/",
-                "https://v2.jokeapi.dev/joke/Any?type=single"
-            ]
-            
-            for api in apis:
-                try:
-                    headers = {'Accept': 'application/json'} if 'icanhazdadjoke' in api else {}
-                    response = requests.get(api, headers=headers, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        
-                        if 'joke' in data:
-                            return f"😄 *Joke*\n\n{data['joke']}"
-                        elif 'joke' in data:  # jokeapi
-                            return f"😄 *Joke*\n\n{data['joke']}"
-                except:
-                    continue
-                    
-            return "🤡 Why don't scientists trust atoms?\n\nBecause they make up everything!"
-                    
-        except Exception as e:
-            logger.error(f"Joke error: {e}")
-            return "😄 Here's a joke: I told my computer I needed a break... now it won't stop sending me vacation ads!"
-
-    async def get_random_quote(self) -> str:
-        try:
-            apis = [
-                "https://api.quotable.io/random",
-                "https://api.adviceslip.com/advice"
-            ]
-            
-            for api in apis:
-                try:
-                    response = requests.get(api, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        
-                        if 'content' in data and 'author' in data:  # quotable.io
-                            return f"💬 *Inspirational Quote*\n\n\"{data['content']}\"\n\n— {data['author']}"
-                        elif 'slip' in data:  # advice slip
-                            return f"💡 *Helpful Advice*\n\n{data['slip']['advice']}"
-                except:
-                    continue
-                    
-            return "💬 The only way to do great work is to love what you do. - Steve Jobs"
-                    
-        except Exception as e:
-            logger.error(f"Quote error: {e}")
-            return "💬 Believe you can and you're halfway there. - Theodore Roosevelt"
-
-    async def get_random_animal(self) -> str:
-        try:
-            animals = [
-                ("🐕 Dog", "https://dog.ceo/api/breeds/image/random"),
-                ("🐈 Cat", "https://api.thecatapi.com/v1/images/search"),
-                ("🐕 Shiba", "http://shibe.online/api/shibes?count=1")
-            ]
-            
-            animal_name, api = random.choice(animals)
-            response = requests.get(api, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                if animal_name == "🐕 Dog":
-                    return f"{animal_name} 🐾\n\n[View Cute Dog]({data['message']})"
-                elif animal_name == "🐈 Cat":
-                    return f"{animal_name} 🐾\n\n[View Cute Cat]({data[0]['url']})"
-                elif animal_name == "🐕 Shiba":
-                    return f"{animal_name} 🐾\n\n[View Cute Shiba]({data[0]})"
-                    
-            return "🐾 Couldn't fetch an animal image, but here's a virtual pet: 🐶"
-                    
-        except Exception as e:
-            logger.error(f"Animal error: {e}")
-            return "🐾 Animals are amazing! 🐱🐶"
-
-    async def get_random_food(self) -> str:
-        try:
-            apis = [
-                "https://www.themealdb.com/api/json/v1/1/random.php",
-                "https://www.thecocktaildb.com/api/json/v1/1/random.php"
-            ]
-            
-            api = random.choice(apis)
-            response = requests.get(api, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                if 'meals' in data and data['meals']:
-                    meal = data['meals'][0]
-                    return f"🍕 *Random Meal Idea*\n\n*{meal['strMeal']}*\nCategory: {meal['strCategory']}\nArea: {meal['strArea']}\n\n[View Recipe]({meal['strMealThumb']})"
-                elif 'drinks' in data and data['drinks']:
-                    drink = data['drinks'][0]
-                    return f"🍹 *Random Drink Idea*\n\n*{drink['strDrink']}*\nCategory: {drink['strCategory']}\nAlcoholic: {drink['strAlcoholic']}\n\n[View Drink]({drink['strDrinkThumb']})"
-                    
-            return "🍕 Try making spaghetti carbonara tonight! 🍝"
-                    
-        except Exception as e:
-            logger.error(f"Food error: {e}")
-            return "🍕 Food is life! What's your favorite dish?"
-
-    async def get_random_fact(self) -> str:
-        try:
-            url = f"http://numbersapi.com/{random.randint(1, 100)}/trivia?json"
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return f"🎲 *Random Fact*\n\n{data['text']}"
-            else:
-                facts = [
-                    "Honey never spoils. Archaeologists have found pots of honey in ancient Egyptian tombs that are over 3,000 years old and still perfectly good to eat.",
-                    "Octopuses have three hearts.",
-                    "A day on Venus is longer than a year on Venus.",
-                    "Bananas are berries, but strawberries aren't.",
-                    "The shortest war in history was between Britain and Zanzibar in 1896. Zanzibar surrendered after 38 minutes."
-                ]
-                return f"🎲 *Random Fact*\n\n{random.choice(facts)}"
-                    
-        except Exception as e:
-            logger.error(f"Fact error: {e}")
-            return "🎲 Did you know? The first computer mouse was made of wood!"
-
-    async def get_random_comic(self) -> str:
-        try:
-            # Get latest comic number first
-            response = requests.get("https://xkcd.com/info.0.json", timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                latest_num = data['num']
-                
-                # Get random comic
-                random_num = random.randint(1, latest_num)
-                comic_response = requests.get(f"https://xkcd.com/{random_num}/info.0.json", timeout=10)
-                
-                if comic_response.status_code == 200:
-                    comic_data = comic_response.json()
-                    return f"📚 *xkcd Comic #{comic_data['num']}*\n\n*{comic_data['title']}*\n\n{comic_data['alt']}\n\n[View Comic]({comic_data['img']})"
-                    
-            return "📚 Check out xkcd.com for amazing comics!"
-                    
-        except Exception as e:
-            logger.error(f"Comic error: {e}")
-            return "📚 Humor is the best medicine! 😄"
-
-    async def get_random_activity(self) -> str:
+        await query.message.reply_text("🍕 Couldn't fetch a recipe. Try again!")
+    
+    async def send_activity(self, query):
+        """Suggest random activity"""
         try:
             response = requests.get("https://www.boredapi.com/api/activity", timeout=10)
             if response.status_code == 200:
-                data = response.json()
-                return f"🎮 *Activity Suggestion*\n\n*{data['activity']}*\n\nType: {data['type'].title()}\nParticipants: {data['participants']}"
+                activity = response.json()
+                activity_text = (
+                    f"🎲 *Activity Suggestion*\n\n"
+                    f"*{activity['activity']}*\n\n"
+                    f"Type: {activity['type'].capitalize()}\n"
+                    f"Participants: {activity['participants']}\n"
+                    f"Price: {'$' * int(activity['price'] * 5) if activity['price'] > 0 else 'Free'}\n"
+                )
+                await query.message.reply_text(activity_text, parse_mode=ParseMode.MARKDOWN)
+                return
+        except Exception as e:
+            logger.error(f"Activity API error: {e}")
+        
+        await query.message.reply_text("🎲 Couldn't fetch an activity. Try again!")
+    
+    async def send_fact(self, query):
+        """Send random fact"""
+        try:
+            num = random.randint(1, 1000)
+            response = requests.get(f"http://numbersapi.com/{num}/trivia", timeout=10)
+            if response.status_code == 200:
+                fact = response.text
+                await query.message.reply_text(f"🤓 *Random Fact*\n\n{fact}", parse_mode=ParseMode.MARKDOWN)
+                return
+        except Exception as e:
+            logger.error(f"Fact API error: {e}")
+        
+        await query.message.reply_text("🤓 Couldn't fetch a fact. Try again!")
+    
+    async def handle_crypto(self, query, data):
+        """Handle cryptocurrency queries"""
+        try:
+            if data == "crypto_btc":
+                crypto_id = "bitcoin"
+                symbol = "₿"
+            elif data == "crypto_eth":
+                crypto_id = "ethereum"
+                symbol = "Ξ"
+            elif data == "crypto_doge":
+                crypto_id = "dogecoin"
+                symbol = "Ð"
+            elif data == "crypto_top10":
+                await self.send_top_cryptos(query)
+                return
+            elif data == "crypto_market":
+                await self.send_market_overview(query)
+                return
             else:
-                activities = [
-                    "Read a book you've been meaning to read",
-                    "Learn a new recipe and cook it",
-                    "Call a friend or family member you haven't spoken to in a while",
-                    "Go for a walk and observe your surroundings",
-                    "Learn 5 words in a new language"
-                ]
-                return f"🎮 *Activity Suggestion*\n\n{random.choice(activities)}"
-                    
-        except Exception as e:
-            logger.error(f"Activity error: {e}")
-            return "🎮 How about learning something new today?"
-
-    # Crypto Features
-    async def get_crypto_prices(self) -> str:
-        try:
-            coins = ['bitcoin', 'ethereum', 'dogecoin', 'cardano', 'solana']
-            prices_text = "₿ *Crypto Prices*\n\n"
+                return
             
-            for coin in coins:
-                url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd&include_24hr_change=true"
-                response = requests.get(url, timeout=10)
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currencies=usd,eur,gbp&include_24hr_change=true&include_market_cap=true"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()[crypto_id]
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    if coin in data:
-                        price = data[coin]['usd']
-                        change = data[coin].get('usd_24h_change', 0)
-                        change_emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
-                        prices_text += f"• {coin.title()}: ${price:,.2f} {change_emoji} {change:+.1f}%\n"
-            
-            prices_text += "\n_Data from CoinGecko_"
-            return prices_text
-            
+                change_emoji = "📈" if data.get('usd_24h_change', 0) > 0 else "📉"
+                change_color = "+" if data.get('usd_24h_change', 0) > 0 else ""
+                
+                crypto_text = (
+                    f"{symbol} *{crypto_id.upper()}*\n\n"
+                    f"💵 USD: ${data['usd']:,.2f}\n"
+                    f"💶 EUR: €{data['eur']:,.2f}\n"
+                    f"💷 GBP: £{data['gbp']:,.2f}\n\n"
+                    f"{change_emoji} 24h Change: {change_color}{data.get('usd_24h_change', 0):.2f}%\n"
+                    f"📊 Market Cap: ${data.get('usd_market_cap', 0):,.0f}"
+                )
+                
+                await query.message.reply_text(crypto_text, parse_mode=ParseMode.MARKDOWN)
+                return
         except Exception as e:
-            logger.error(f"Crypto error: {e}")
-            return "❌ Could not fetch crypto prices at the moment"
-
-    async def get_specific_crypto(self, coin: str) -> str:
+            logger.error(f"Crypto API error: {e}")
+        
+        await query.message.reply_text("📊 Couldn't fetch crypto data. Try again!")
+    
+    async def send_top_cryptos(self, query):
+        """Send top 10 cryptocurrencies"""
         try:
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd,eur,gbp&include_24hr_change=true&include_market_cap=true"
+            url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                cryptos = response.json()
+                
+                crypto_list = "📊 *Top 10 Cryptocurrencies*\n\n"
+                
+                for i, crypto in enumerate(cryptos, 1):
+                    change_emoji = "📈" if crypto['price_change_percentage_24h'] > 0 else "📉"
+                    crypto_list += (
+                        f"{i}. *{crypto['symbol'].upper()}* - ${crypto['current_price']:,.2f}\n"
+                        f"   {change_emoji} {crypto['price_change_percentage_24h']:.2f}%\n\n"
+                    )
+                
+                await query.message.reply_text(crypto_list, parse_mode=ParseMode.MARKDOWN)
+                return
+        except Exception as e:
+            logger.error(f"Top cryptos error: {e}")
+        
+        await query.message.reply_text("📊 Couldn't fetch top cryptos. Try again!")
+    
+    async def send_market_overview(self, query):
+        """Send market overview"""
+        try:
+            url = "https://api.coingecko.com/api/v3/global"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()['data']
+                
+                market_text = (
+                    f"💹 *Crypto Market Overview*\n\n"
+                    f"🌐 Total Market Cap: ${data['total_market_cap']['usd']:,.0f}\n"
+                    f"📊 24h Volume: ${data['total_volume']['usd']:,.0f}\n"
+                    f"₿ BTC Dominance: {data['market_cap_percentage']['btc']:.2f}%\n"
+                    f"Ξ ETH Dominance: {data['market_cap_percentage']['eth']:.2f}%\n"
+                    f"🪙 Active Cryptos: {data['active_cryptocurrencies']:,}\n"
+                )
+                
+                await query.message.reply_text(market_text, parse_mode=ParseMode.MARKDOWN)
+                return
+        except Exception as e:
+            logger.error(f"Market overview error: {e}")
+        
+        await query.message.reply_text("💹 Couldn't fetch market data. Try again!")
+    
+    # Command handlers
+    async def imagine_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate AI image from prompt"""
+        if not context.args:
+            await update.message.reply_text("🎨 Usage: /imagine <your description>")
+            return
+        
+        prompt = " ".join(context.args)
+        await update.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+        
+        try:
+            encoded_prompt = urllib.parse.quote(prompt)
+            image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+            
+            await update.message.reply_photo(
+                photo=image_url,
+                caption=f"🎨 *Generated Image*\n\nPrompt: _{prompt}_",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Image generation error: {e}")
+            await update.message.reply_text("❌ Failed to generate image. Try again!")
+    
+    async def ask_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ask AI a question"""
+        if not context.args:
+            await update.message.reply_text("💬 Usage: /ask <your question>")
+            return
+        
+        question = " ".join(context.args)
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        
+        try:
+            encoded_question = urllib.parse.quote(question)
+            response = requests.get(
+                f"https://text.pollinations.ai/{encoded_question}",
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                answer = response.text
+                response_text = f"🤖 *AI Response*\n\n{answer}"
+                
+                # Split long messages
+                if len(response_text) > 4000:
+                    response_text = response_text[:4000] + "..."
+                
+                await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text("❌ AI service unavailable. Try again later!")
+        except Exception as e:
+            logger.error(f"AI chat error: {e}")
+            await update.message.reply_text("❌ Failed to get AI response. Try again!")
+    
+    async def weather_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Get weather for a city"""
+        if not context.args:
+            await update.message.reply_text("🌤️ Usage: /weather <city name>")
+            return
+        
+        city = " ".join(context.args)
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        
+        try:
+            # Geocoding to get coordinates
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1"
+            geo_response = requests.get(geo_url, timeout=10)
+            
+            if geo_response.status_code == 200 and geo_response.json().get('results'):
+                location = geo_response.json()['results'][0]
+                lat = location['latitude']
+                lon = location['longitude']
+                
+                # Get weather data
+                weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=auto"
+                weather_response = requests.get(weather_url, timeout=10)
+                
+                if weather_response.status_code == 200:
+                    weather_data = weather_response.json()['current']
+                    
+                    weather_codes = {
+                        0: "☀️ Clear sky",
+                        1: "🌤️ Mainly clear",
+                        2: "⛅ Partly cloudy",
+                        3: "☁️ Overcast",
+                        45: "🌫️ Foggy",
+                        48: "🌫️ Foggy",
+                        51: "🌦️ Light drizzle",
+                        61: "🌧️ Light rain",
+                        71: "🌨️ Light snow",
+                        95: "⛈️ Thunderstorm"
+                    }
+                    
+                    weather_desc = weather_codes.get(weather_data['weather_code'], "🌡️ Weather")
+                    
+                    weather_text = (
+                        f"🌤️ *Weather in {location['name']}, {location['country']}*\n\n"
+                        f"{weather_desc}\n\n"
+                        f"🌡️ Temperature: {weather_data['temperature_2m']}°C\n"
+                        f"💧 Humidity: {weather_data['relative_humidity_2m']}%\n"
+                        f"💨 Wind Speed: {weather_data['wind_speed_10m']} km/h"
+                    )
+                    
+                    await update.message.reply_text(weather_text, parse_mode=ParseMode.MARKDOWN)
+                    return
+            
+            await update.message.reply_text(f"❌ City '{city}' not found. Try again!")
+        except Exception as e:
+            logger.error(f"Weather error: {e}")
+            await update.message.reply_text("❌ Failed to fetch weather. Try again!")
+    
+    async def crypto_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Get cryptocurrency price"""
+        if not context.args:
+            await update.message.reply_text("📊 Usage: /crypto <symbol> (e.g., /crypto btc)")
+            return
+        
+        symbol = context.args[0].lower()
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        
+        crypto_map = {
+            'btc': 'bitcoin',
+            'eth': 'ethereum',
+            'doge': 'dogecoin',
+            'ada': 'cardano',
+            'xrp': 'ripple',
+            'dot': 'polkadot',
+            'sol': 'solana',
+            'matic': 'polygon',
+            'link': 'chainlink',
+            'ltc': 'litecoin'
+        }
+        
+        crypto_id = crypto_map.get(symbol, symbol)
+        
+        try:
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200 and crypto_id in response.json():
+                data = response.json()[crypto_id]
+                
+                change_emoji = "📈" if data.get('usd_24h_change', 0) > 0 else "📉"
+                change_sign = "+" if data.get('usd_24h_change', 0) > 0 else ""
+                
+                crypto_text = (
+                    f"📊 *{crypto_id.upper()}*\n\n"
+                    f"💵 Price: ${data['usd']:,.4f}\n"
+                    f"{change_emoji} 24h: {change_sign}{data.get('usd_24h_change', 0):.2f}%\n"
+                    f"📊 Market Cap: ${data.get('usd_market_cap', 0):,.0f}"
+                )
+                
+                await update.message.reply_text(crypto_text, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(f"❌ Cryptocurrency '{symbol}' not found!")
+        except Exception as e:
+            logger.error(f"Crypto command error: {e}")
+            await update.message.reply_text("❌ Failed to fetch crypto data. Try again!")
+    
+    async def meme_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send random meme"""
+        await update.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+        
+        try:
+            response = requests.get("https://meme-api.com/gimme", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                await update.message.reply_photo(
+                    photo=data['url'],
+                    caption=f"😂 *{data['title']}*\n\n👍 {data.get('ups', 0)} upvotes",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        except Exception as e:
+            logger.error(f"Meme command error: {e}")
+            await update.message.reply_text("😅 Couldn't fetch a meme. Try again!")
+    
+    async def joke_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send random joke"""
+        try:
+            headers = {'Accept': 'application/json'}
+            response = requests.get("https://icanhazdadjoke.com/", headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                joke = response.json()['joke']
+                await update.message.reply_text(f"🎭 {joke}")
+        except Exception as e:
+            logger.error(f"Joke command error: {e}")
+            await update.message.reply_text("😅 Couldn't fetch a joke. Try again!")
+    
+    async def quote_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send inspirational quote"""
+        try:
+            response = requests.get("https://api.quotable.io/random", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                quote_text = f"💭 _{data['content']}_\n\n— *{data['author']}*"
+                await update.message.reply_text(quote_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Quote command error: {e}")
+            await update.message.reply_text("💭 Couldn't fetch a quote. Try again!")
+    
+    async def qr_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate QR code"""
+        if not context.args:
+            await update.message.reply_text("📱 Usage: /qr <text or URL>")
+            return
+        
+        text = " ".join(context.args)
+        await update.message.reply_chat_action(ChatAction.UPLOAD_PHOTO)
+        
+        try:
+            encoded_text = urllib.parse.quote(text)
+            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={encoded_text}"
+            
+            await update.message.reply_photo(
+                photo=qr_url,
+                caption=f"📱 *QR Code Generated*\n\nData: `{text}`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"QR code error: {e}")
+            await update.message.reply_text("❌ Failed to generate QR code. Try again!")
+    
+    async def book_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Search for books"""
+        if not context.args:
+            await update.message.reply_text("📚 Usage: /book <title>")
+            return
+        
+        query = " ".join(context.args)
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        
+        try:
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://openlibrary.org/search.json?q={encoded_query}&limit=5"
             response = requests.get(url, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
-                if coin in data:
-                    crypto_data = data[coin]
-                    price_usd = crypto_data['usd']
-                    price_eur = crypto_data['eur']
-                    price_gbp = crypto_data['gbp']
-                    change = crypto_data.get('usd_24h_change', 0)
-                    market_cap = crypto_data.get('usd_market_cap', 0)
+                
+                if data.get('docs'):
+                    books_text = f"📚 *Search results for '{query}'*\n\n"
                     
-                    change_emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
+                    for i, book in enumerate(data['docs'][:5], 1):
+                        title = book.get('title', 'Unknown')
+                        author = ', '.join(book.get('author_name', ['Unknown']))
+                        year = book.get('first_publish_year', 'N/A')
+                        
+                        books_text += f"{i}. *{title}*\n"
+                        books_text += f"   Author: {author}\n"
+                        books_text += f"   Year: {year}\n\n"
                     
-                    return f"""₿ *{coin.title()} Price*
-
-💵 USD: ${price_usd:,.2f}
-💶 EUR: €{price_eur:,.2f}
-💷 GBP: £{price_gbp:,.2f}
-
-24h Change: {change_emoji} {change:+.1f}%
-Market Cap: ${market_cap:,.0f}
-
-_Data from CoinGecko_"""
-            
-            return f"❌ Could not fetch {coin} price"
-            
+                    await update.message.reply_text(books_text, parse_mode=ParseMode.MARKDOWN)
+                else:
+                    await update.message.reply_text(f"❌ No books found for '{query}'")
         except Exception as e:
-            logger.error(f"Crypto specific error: {e}")
-            return f"❌ Error fetching {coin} price"
-
-    # Weather Feature
-    async def get_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        location = update.message.text
+            logger.error(f"Book search error: {e}")
+            await update.message.reply_text("❌ Failed to search books. Try again!")
+    
+    async def country_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Get country information"""
+        if not context.args:
+            await update.message.reply_text("🌍 Usage: /country <country name>")
+            return
+        
+        country = " ".join(context.args)
+        await update.message.reply_chat_action(ChatAction.TYPING)
         
         try:
-            await update.message.reply_text(f"🌤️ Getting weather for {location}...")
+            encoded_country = urllib.parse.quote(country)
+            url = f"https://restcountries.com/v3.1/name/{encoded_country}"
+            response = requests.get(url, timeout=10)
             
-            # First, get coordinates from location name
-            geo_url = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(location)}&format=json"
-            geo_response = requests.get(geo_url, timeout=10)
-            
-            if geo_response.status_code == 200 and geo_response.json():
-                geo_data = geo_response.json()[0]
-                lat, lon = geo_data['lat'], geo_data['lon']
-                display_name = geo_data['display_name']
+            if response.status_code == 200:
+                data = response.json()[0]
                 
-                # Get weather data
-                weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode&timezone=auto"
-                weather_response = requests.get(weather_url, timeout=10)
+                country_text = (
+                    f"🌍 *{data['name']['common']}*\n\n"
+                    f"🏛️ Capital: {data.get('capital', ['N/A'])[0]}\n"
+                    f"👥 Population: {data.get('population', 0):,}\n"
+                    f"🗺️ Region: {data.get('region', 'N/A')}\n"
+                    f"💬 Languages: {', '.join(data.get('languages', {}).values())}\n"
+                    f"💰 Currency: {', '.join([c.get('name', 'N/A') for c in data.get('currencies', {}).values()])}\n"
+                    f"🌐 TLD: {', '.join(data.get('tld', ['N/A']))}\n"
+                    f"{data.get('flag', '🏴')} Flag"
+                )
                 
-                if weather_response.status_code == 200:
-                    weather_data = weather_response.json()
-                    current = weather_data['current_weather']
-                    
-                    temp = current['temperature']
-                    windspeed = current['windspeed']
-                    weather_code = current['weathercode']
-                    
-                    # Get daily forecast
-                    daily = weather_data['daily']
-                    today_max = daily['temperature_2m_max'][0]
-                    today_min = daily['temperature_2m_min'][0]
-                    
-                    weather_desc = self.get_weather_description(weather_code)
-                    
-                    weather_text = f"""
-🌤️ *Weather in {location}*
-
-📍 {display_name.split(',')[0]}
-🌡️ Current: {temp}°C
-📊 Today: {today_min}°C - {today_max}°C
-💨 Wind: {windspeed} km/h
-☁️ Conditions: {weather_desc}
-
-_Data from Open-Meteo_
-                    """
-                    
-                    await update.message.reply_text(weather_text, parse_mode=ParseMode.MARKDOWN)
-                else:
-                    await update.message.reply_text("❌ Could not fetch weather data for this location")
+                await update.message.reply_text(country_text, parse_mode=ParseMode.MARKDOWN)
             else:
-                await update.message.reply_text("❌ Location not found. Try a different city name.")
-                
+                await update.message.reply_text(f"❌ Country '{country}' not found!")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error fetching weather: {str(e)}")
-        
-        return ConversationHandler.END
-
-    def get_weather_description(self, code: int) -> str:
-        weather_codes = {
-            0: "Clear sky",
-            1: "Mainly clear",
-            2: "Partly cloudy",
-            3: "Overcast",
-            45: "Fog",
-            48: "Depositing rime fog",
-            51: "Light drizzle",
-            53: "Moderate drizzle",
-            55: "Dense drizzle",
-            61: "Slight rain",
-            63: "Moderate rain",
-            65: "Heavy rain",
-            80: "Slight rain showers",
-            81: "Moderate rain showers",
-            82: "Violent rain showers",
-            95: "Thunderstorm",
-            96: "Thunderstorm with slight hail",
-            99: "Thunderstorm with heavy hail"
-        }
-        return weather_codes.get(code, "Unknown conditions")
-
-    # Currency Converter
-    async def convert_currency(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        text = update.message.text.upper()
+            logger.error(f"Country info error: {e}")
+            await update.message.reply_text("❌ Failed to fetch country info. Try again!")
+    
+    async def convert_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Convert currency"""
+        if len(context.args) < 3:
+            await update.message.reply_text("💱 Usage: /convert <amount> <from> <to>\nExample: /convert 100 USD EUR")
+            return
         
         try:
-            # Parse input like "100 USD to KES"
-            parts = text.split()
-            if len(parts) >= 4 and parts[1] and parts[3]:
-                amount = float(parts[0])
-                from_curr = parts[1]
-                to_curr = parts[3]
+            amount = float(context.args[0])
+            from_curr = context.args[1].upper()
+            to_curr = context.args[2].upper()
+            
+            await update.message.reply_chat_action(ChatAction.TYPING)
+            
+            url = f"https://api.exchangerate.host/latest?base={from_curr}&symbols={to_curr}"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
                 
-                await update.message.reply_text(f"💱 Converting {amount} {from_curr} to {to_curr}...")
-                
-                url = f"https://api.exchangerate.host/convert?from={from_curr}&to={to_curr}&amount={amount}"
-                response = requests.get(url, timeout=10)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data['success']:
-                        result = data['result']
-                        rate = data['info']['rate']
-                        date = data['date']
-                        
-                        conversion_text = f"""
-💰 *Currency Conversion*
-
-💵 {amount} {from_curr} = {result:.2f} {to_curr}
-📊 Exchange Rate: 1 {from_curr} = {rate:.4f} {to_curr}
-📅 Date: {date}
-
-_Data from ExchangeRate.host_
-                        """
-                        
-                        await update.message.reply_text(conversion_text, parse_mode=ParseMode.MARKDOWN)
-                    else:
-                        await update.message.reply_text("❌ Currency conversion failed. Check currency codes.")
+                if data.get('success') and to_curr in data.get('rates', {}):
+                    rate = data['rates'][to_curr]
+                    result = amount * rate
+                    
+                    convert_text = (
+                        f"💱 *Currency Conversion*\n\n"
+                        f"{amount:,.2f} {from_curr} = {result:,.2f} {to_curr}\n\n"
+                        f"📊 Rate: 1 {from_curr} = {rate:.4f} {to_curr}"
+                    )
+                    
+                    await update.message.reply_text(convert_text, parse_mode=ParseMode.MARKDOWN)
                 else:
-                    await update.message.reply_text("❌ Could not fetch exchange rates")
+                    await update.message.reply_text("❌ Invalid currency codes!")
             else:
-                await update.message.reply_text("❌ Invalid format. Use: '100 USD to KES'")
-                
+                await update.message.reply_text("❌ Failed to fetch exchange rates!")
         except ValueError:
-            await update.message.reply_text("❌ Invalid amount. Please enter a valid number.")
+            await update.message.reply_text("❌ Invalid amount! Use numbers only.")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error converting currency: {str(e)}")
+            logger.error(f"Currency conversion error: {e}")
+            await update.message.reply_text("❌ Failed to convert currency. Try again!")
+    
+    # Admin commands
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show bot statistics (admin only)"""
+        if update.effective_user.id != self.admin_id:
+            await update.message.reply_text("❌ Admin access required!")
+            return
         
-        return ConversationHandler.END
-
-    # AI Response Generator
-    async def generate_ai_response(self, prompt: str) -> str:
-        try:
-            # Enhanced AI response using multiple approaches
-            prompt_lower = prompt.lower()
-            
-            if any(word in prompt_lower for word in ['hello', 'hi', 'hey', 'hola']):
-                return f"👋 Hello! I'm Advay Universe! How can I assist you today? Use the menu to explore my features! 🚀"
-            elif any(word in prompt_lower for word in ['weather', 'temperature', 'forecast']):
-                return "🌤️ Want weather info? Use the Utilities menu or click '🌤️ Weather' button!"
-            elif any(word in prompt_lower for word in ['joke', 'funny', 'laugh']):
-                joke = await self.get_random_joke()
-                return joke
-            elif any(word in prompt_lower for word in ['quote', 'inspiration', 'motivation']):
-                quote = await self.get_random_quote()
-                return quote
-            elif any(word in prompt_lower for word in ['crypto', 'bitcoin', 'ethereum']):
-                return "₿ Check crypto prices using the '📊 Crypto & Finance' menu!"
-            elif any(word in prompt_lower for word in ['thank', 'thanks']):
-                return "You're welcome! 😊 Let me know if you need anything else!"
-            elif any(word in prompt_lower for word in ['how are you', 'how are you doing']):
-                return "I'm doing great! Ready to help you with amazing features! 🤖"
-            else:
-                # Use pollinations.ai for general responses
-                url = f"https://pollinations.ai/api/text?prompt={requests.utils.quote(prompt)}"
-                response = requests.get(url, timeout=15)
-                
-                if response.status_code == 200:
-                    return f"🤖 {response.text}\n\n_Powered by AI_"
-                else:
-                    return "I'm Advay Universe, your all-in-one assistant! 🌟 Use the menu buttons to explore my amazing features like AI image generation, crypto prices, weather, and much more! 🚀"
-                    
-        except Exception as e:
-            return "I'm here to help! 🌟 Use the menu buttons to explore AI features, entertainment, utilities, and more! What would you like to try first? 😊"
-
-    # Group welcome handler
-    async def welcome_new_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if update.message.new_chat_members:
-            for member in update.message.new_chat_members:
-                if member.id == context.bot.id:
-                    # Bot was added to group
-                    welcome_text = """
-🤖 *Advay Universe has joined the group!*
-
-I'm your multi-functional assistant! Here's what I can do in groups:
-
-🎉 Entertainment: memes, jokes, quotes
-💰 Utilities: weather, currency, crypto prices
-🤖 AI: image generation, text completion
-📊 Group: welcome messages, fun interactions
-
-Use /help to see all commands!
-                    """
-                    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
-                else:
-                    # Regular user joined
-                    welcome_text = f"""
-👋 Welcome {member.first_name} to the group!
-
-I'm Advay Universe, your group assistant. 
-Type /help to see what I can do! 🚀
-
-Pro tip: Try /meme for some fun! 😄
-                    """
-                    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
-
-    # Admin broadcast feature
-    async def admin_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Admin only feature")
-            return ConversationHandler.END
-            
-        await update.message.reply_text(
-            "📢 *Admin Broadcast*\n\nSend the message you want to broadcast to all users:",
-            parse_mode=ParseMode.MARKDOWN
+        uptime = datetime.now() - self.bot_stats['start_time']
+        hours = uptime.total_seconds() / 3600
+        
+        stats_text = (
+            f"📊 *Bot Statistics*\n\n"
+            f"👥 Total Users: {len(self.users)}\n"
+            f"💬 Total Commands: {self.bot_stats['total_commands']}\n"
+            f"⏱️ Uptime: {int(hours)}h {int((hours % 1) * 60)}m\n"
+            f"📅 Started: {self.bot_stats['start_time'].strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"*Top Features:*\n"
         )
-        return BROADCAST_MESSAGE
-
-    async def execute_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        message = update.message.text
-        successful = 0
+        
+        # Top 5 features
+        sorted_features = sorted(
+            self.bot_stats['features_used'].items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:5]
+        
+        for feature, count in sorted_features:
+            stats_text += f"• {feature}: {count}\n"
+        
+        await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
+    
+    async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Broadcast message to all users (admin only)"""
+        if update.effective_user.id != self.admin_id:
+            await update.message.reply_text("❌ Admin access required!")
+            return
+        
+        if not context.args:
+            await update.message.reply_text("📢 Usage: /broadcast <message>")
+            return
+        
+        message = " ".join(context.args)
+        success = 0
         failed = 0
         
-        await update.message.reply_text("🔄 Starting broadcast... This may take a while.")
+        await update.message.reply_text(f"📢 Broadcasting to {len(self.users)} users...")
         
-        for user_id in user_sessions.keys():
+        for user_id in self.users.keys():
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"📢 *Broadcast from Advay Universe Admin*\n\n{message}\n\n---\n_This is an automated broadcast_",
+                    text=f"📢 *Broadcast Message*\n\n{message}",
                     parse_mode=ParseMode.MARKDOWN
                 )
-                successful += 1
-                await asyncio.sleep(0.1)  # Rate limiting
+                success += 1
+                await asyncio.sleep(0.05)  # Rate limiting
             except Exception as e:
+                logger.error(f"Broadcast error for user {user_id}: {e}")
                 failed += 1
-                logger.error(f"Broadcast failed for {user_id}: {e}")
         
         await update.message.reply_text(
-            f"✅ *Broadcast Completed!*\n\n✅ Successful: {successful}\n❌ Failed: {failed}\n📊 Total Users: {len(user_sessions)}",
-            parse_mode=ParseMode.MARKDOWN
+            f"✅ Broadcast complete!\n\n"
+            f"Sent: {success}\nFailed: {failed}"
         )
-        
-        return ConversationHandler.END
-
-    # Admin statistics
-    async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Admin only feature")
+    
+    async def users_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List all users (admin only)"""
+        if update.effective_user.id != self.admin_id:
+            await update.message.reply_text("❌ Admin access required!")
             return
-            
-        total_users = len(user_sessions)
-        now = datetime.now()
-        active_today = sum(1 for user_data in user_sessions.values() 
-                          if (now - user_data['last_active']).days < 1)
-        active_week = sum(1 for user_data in user_sessions.values() 
-                         if (now - user_data['last_active']).days < 7)
         
-        total_usage = sum(user_data['usage_count'] for user_data in user_sessions.values())
-        avg_usage = total_usage / total_users if total_users > 0 else 0
+        users_text = f"👥 *Total Users: {len(self.users)}*\n\n"
         
-        stats_text = f"""
-📊 *Bot Statistics*
-
-👥 Total Users: {total_users}
-🟢 Active Today: {active_today}
-🟡 Active This Week: {active_week}
-📈 Total Interactions: {total_usage}
-📊 Avg. Usage per User: {avg_usage:.1f}
-
-⏰ Last Updated: {now.strftime('%Y-%m-%d %H:%M:%S')}
-        """
+        for user_id, user_data in list(self.users.items())[:20]:
+            users_text += f"• {user_data.get('username', 'N/A')} (ID: {user_id})\n"
         
-        await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
-
-    # Cancel conversation
-    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        await update.message.reply_text("❌ Operation cancelled.")
-        return ConversationHandler.END
-
-    def setup_handlers(self, application: Application) -> None:
-        # Basic commands
-        application.add_handler(CommandHandler("start", self.start))
-        application.add_handler(CommandHandler("help", self.help_command))
-        application.add_handler(CommandHandler("crypto", self.get_crypto_prices))
-        application.add_handler(CommandHandler("meme", lambda u, c: asyncio.create_task(self.get_random_meme())))
-        application.add_handler(CommandHandler("joke", lambda u, c: asyncio.create_task(self.get_random_joke())))
-        application.add_handler(CommandHandler("quote", lambda u, c: asyncio.create_task(self.get_random_quote())))
-        application.add_handler(CommandHandler("stats", self.admin_stats))
+        if len(self.users) > 20:
+            users_text += f"\n... and {len(self.users) - 20} more"
         
-        # Message handler for buttons
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        
-        # Button callback handler
-        application.add_handler(CallbackQueryHandler(self.button_handler))
-        
-        # Group welcome handler
-        application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, self.welcome_new_member))
-        
-        # Conversation handlers
-        conv_handler_ai_image = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.button_handler, pattern="^ai_image$")],
-            states={
-                PROMPT_IMAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.generate_ai_image)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)]
-        )
-        
-        conv_handler_ai_text = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.button_handler, pattern="^ai_text$")],
-            states={
-                PROMPT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.generate_ai_text)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)]
-        )
-        
-        conv_handler_weather = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.button_handler, pattern="^get_weather$")],
-            states={
-                WEATHER_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_weather)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)]
-        )
-        
-        conv_handler_currency = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.button_handler, pattern="^currency_convert$")],
-            states={
-                CURRENCY_CONVERT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.convert_currency)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)]
-        )
-        
-        conv_handler_qr = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.button_handler, pattern="^generate_qr$")],
-            states={
-                QR_GENERATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.generate_qr_code)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)]
-        )
-        
-        conv_handler_broadcast = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.admin_broadcast, pattern="^admin_broadcast$")],
-            states={
-                BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.execute_broadcast)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)]
-        )
-        
-        application.add_handler(conv_handler_ai_image)
-        application.add_handler(conv_handler_ai_text)
-        application.add_handler(conv_handler_weather)
-        application.add_handler(conv_handler_currency)
-        application.add_handler(conv_handler_qr)
-        application.add_handler(conv_handler_broadcast)
-
-    async def post_init(self, application: Application) -> None:
-        # Set bot commands
-        commands = [
-            BotCommand("start", "Start the bot"),
-            BotCommand("help", "Show help"),
-            BotCommand("meme", "Get random meme"),
-            BotCommand("joke", "Get random joke"),
-            BotCommand("quote", "Get inspirational quote"),
-            BotCommand("crypto", "Crypto prices"),
-            BotCommand("weather", "Get weather info"),
-            BotCommand("stats", "Admin statistics"),
-        ]
-        await application.bot.set_my_commands(commands)
-
+        await update.message.reply_text(users_text, parse_mode=ParseMode.MARKDOWN)
+    
+    # Group handlers
+    async def new_member_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Welcome new members"""
+        for member in update.message.new_chat_members:
+            if member.id == context.bot.id:
+                # Bot was added to group
+                welcome_msg = (
+                    f"👋 Thanks for adding me to *{update.effective_chat.title}*!\n\n"
+                    f"I'll help make this group awesome with:\n"
+                    f"• Auto-welcome messages\n"
+                    f"• Fun commands and entertainment\n"
+                    f"• Useful utilities\n\n"
+                    f"Use /help to see what I can do!"
+                )
+                await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
+            else:
+                # Regular member joined
+                welcome_msg = (
+                    f"👋 Welcome {member.mention_html()}, to *{update.effective_chat.title}*!\n\n"
+                    f"We're glad to have you here! 🎉"
+                )
+                await update.message.reply_html(welcome_msg)
+    
+    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Log errors"""
+        logger.error(f"Update {update} caused error {context.error}")
+    
     def run(self):
-        """Run the bot"""
-        application = Application.builder().token(BOT_TOKEN).post_init(self.post_init).build()
-        self.application = application
+        """Start the bot"""
+        app = Application.builder().token(self.token).build()
         
-        self.setup_handlers(application)
+        # Command handlers
+        app.add_handler(CommandHandler("start", self.start_command))
+        app.add_handler(CommandHandler("help", self.help_command))
+        app.add_handler(CommandHandler("imagine", self.imagine_command))
+        app.add_handler(CommandHandler("ask", self.ask_command))
+        app.add_handler(CommandHandler("weather", self.weather_command))
+        app.add_handler(CommandHandler("crypto", self.crypto_command))
+        app.add_handler(CommandHandler("btc", lambda u, c: self.crypto_command(u, type('obj', (object,), {'args': ['btc']})(), )))
+        app.add_handler(CommandHandler("eth", lambda u, c: self.crypto_command(u, type('obj', (object,), {'args': ['eth']})(), )))
+        app.add_handler(CommandHandler("doge", lambda u, c: self.crypto_command(u, type('obj', (object,), {'args': ['doge']})(), )))
+        app.add_handler(CommandHandler("meme", self.meme_command))
+        app.add_handler(CommandHandler("joke", self.joke_command))
+        app.add_handler(CommandHandler("quote", self.quote_command))
+        app.add_handler(CommandHandler("qr", self.qr_command))
+        app.add_handler(CommandHandler("book", self.book_command))
+        app.add_handler(CommandHandler("country", self.country_command))
+        app.add_handler(CommandHandler("convert", self.convert_command))
         
-        logger.info("🤖 Advay Universe Bot is starting...")
-        logger.info(f"👤 Admin ID: {ADMIN_ID}")
-        logger.info(f"👥 Pre-loaded users: {len(user_sessions)}")
+        # Admin commands
+        app.add_handler(CommandHandler("stats", self.stats_command))
+        app.add_handler(CommandHandler("broadcast", self.broadcast_command))
+        app.add_handler(CommandHandler("users", self.users_command))
         
-        application.run_polling()
+        # Callback handlers
+        app.add_handler(CallbackQueryHandler(self.button_callback))
+        
+        # Message handlers
+        app.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self.handle_menu_button
+        ))
+        
+        # Group handlers
+        app.add_handler(MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS,
+            self.new_member_handler
+        ))
+        
+        # Error handler
+        app.add_error_handler(self.error_handler)
+        
+        logger.info("🚀 Advay Universe Bot is starting...")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 def main():
+    """Main entry point"""
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    ADMIN_ID = os.getenv("ADMIN_ID")
+    
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN environment variable is required!")
+        logger.error("❌ BOT_TOKEN not found in environment variables!")
         return
     
-    bot = AdvayUniverseBot()
+    if not ADMIN_ID:
+        logger.warning("⚠️ ADMIN_ID not set. Admin features will be disabled.")
+    
+    bot = AdvayUniverseBot(BOT_TOKEN, ADMIN_ID)
     bot.run()
+
 
 if __name__ == "__main__":
     main()
